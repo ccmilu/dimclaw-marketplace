@@ -6,6 +6,8 @@
 
 来源：Hacker News、GitHub Trending、Product Hunt、36氪、腾讯新闻、华尔街见闻、V2EX、微博、ArXiv、TechCrunch、The Verge、HuggingFace Papers、财联社、少数派。
 
+![报告示例](./assets/demo.jpg)
+
 ---
 
 ## 一、前置依赖：zhipu-reader
