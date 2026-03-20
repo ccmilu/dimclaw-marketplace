@@ -1,5 +1,5 @@
 {
   "name": "zhipu-reader",
   "description": "使用智谱 AI Reader API 读取并解析网页内容，返回干净的 markdown 或纯文本，支持批量模式。需要 ZHIPU_API_KEY 环境变量。",
-  "version": "1.0.0"
+  "version": "1.0.1"
 }
