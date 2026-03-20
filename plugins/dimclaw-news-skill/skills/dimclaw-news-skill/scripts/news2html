@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""Convert structured JSON news data to a beautiful HTML email newsletter."""
+
+import argparse
+import json
+import sys
+import html
+import datetime
+import os
+
+CATEGORY_ORDER = ["headline", "tech", "finance", "life", "other"]
+
+CATEGORY_CONFIG = {
+    "headline": {"name": "全球头条", "emoji": "\U0001F30D", "color": "#E74C3C", "bg": "#FDF2F2"},
+    "tech":     {"name": "科技与AI", "emoji": "\U0001F916", "color": "#3498DB", "bg": "#EBF5FB"},
+    "finance":  {"name": "财经与社会", "emoji": "\U0001F4C8", "color": "#27AE60", "bg": "#EAFAF1"},
+    "life":     {"name": "生活与娱乐", "emoji": "\u2615", "color": "#F39C12", "bg": "#FEF5E7"},
+    "other":    {"name": "其他", "emoji": "\U0001F4CC", "color": "#95A5A6", "bg": "#F2F3F4"},
+}
+
+WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+
+def escape(text):
+    """HTML-escape text, treating None as empty string."""
+    if text is None:
+        return ""
+    return html.escape(str(text))
+
+
+def format_date(date_str):
+    """Format 'YYYY-MM-DD' to 'YYYY年M月D日 星期X'. Falls back to raw string."""
+    try:
+        d = datetime.date.fromisoformat(date_str)
+        weekday = WEEKDAYS[d.weekday()]
+        return f"{d.year}年{d.month}月{d.day}日 {weekday}"
+    except (ValueError, TypeError):
+        return str(date_str) if date_str else ""
+
+
+def group_by_category(items):
+    """Group items by category. Unknown categories go to 'other'."""
+    groups = {}
+    for item in items:
+        cat = item.get("category", "other")
+        if cat not in CATEGORY_CONFIG:
+            cat = "other"
+        groups.setdefault(cat, []).append(item)
+    return groups
+
+
+def load_and_validate(filepath):
+    """Load JSON file and validate required fields. Exits on error."""
+    if not os.path.exists(filepath):
+        print(f"错误: 文件不存在: {filepath}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"错误: JSON 解析失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    required_keys = ["title", "date", "main", "brief", "signature", "tagline"]
+    for key in required_keys:
+        if key not in data:
+            print(f"错误: 缺少必需字段: {key}", file=sys.stderr)
+            sys.exit(1)
+
+    allowed_cats = set(CATEGORY_CONFIG.keys())
+
+    for i, item in enumerate(data["main"]):
+        for field in ["title", "url", "category", "summary"]:
+            if field not in item:
+                print(f"错误: main[{i}] 缺少必需字段: {field}", file=sys.stderr)
+                sys.exit(1)
+        if item["category"] not in allowed_cats:
+            print(f"错误: main[{i}] 的 category 值无效: {item['category']}", file=sys.stderr)
+            sys.exit(1)
+
+    for i, item in enumerate(data["brief"]):
+        for field in ["title", "url", "category"]:
+            if field not in item:
+                print(f"错误: brief[{i}] 缺少必需字段: {field}", file=sys.stderr)
+                sys.exit(1)
+        if item["category"] not in allowed_cats:
+            print(f"错误: brief[{i}] 的 category 值无效: {item['category']}", file=sys.stderr)
+            sys.exit(1)
+
+    return data
+
+
+def render_meta_line(item):
+    """Render source/time/heat meta line. Omit missing fields."""
+    parts = []
+    if item.get("source"):
+        parts.append(escape(item["source"]))
+    if item.get("time"):
+        parts.append(escape(item["time"]))
+    if item.get("heat"):
+        parts.append(escape(item["heat"]))
+    if not parts:
+        return ""
+    meta_text = " &middot; ".join(parts)
+    return f'<p style="margin:6px 0 0 0;color:#7F8C8D;font-size:14px;line-height:1.5;">{meta_text}</p>'
+
+
+def render_header(data):
+    """Render the header section."""
+    title = escape(data["title"])
+    date_str = format_date(data["date"])
+    return (
+        '<div style="width:100%;background-color:#F7F8FA;border:1px solid #E2E4E8;'
+        'border-left:5px solid #E74C3C;padding:24px 20px;box-sizing:border-box;'
+        'box-shadow:0 1px 4px rgba(0,0,0,0.06);">'
+        f'<h1 style="margin:0 0 4px 0;color:#1A1A2E;font-size:24px;font-weight:800;'
+        f'letter-spacing:0.5px;">{title}</h1>'
+        f'<p style="margin:0;color:#AAAAAA;font-size:13px;font-weight:400;">{date_str}</p>'
+        '</div>'
+    )
+
+
+def render_event_timeline(tracking_info):
+    """Render an event timeline block for continuously tracked stories.
+
+    Supports two formats:
+    - New format: tracking_info.timeline = [{"date": "...", "title": "...", "url": "..."}]
+    - Legacy format: tracking_info.prev_titles = ["title1", "title2"]
+
+    Returns HTML string, or '' if tracking_info lacks timeline data.
+    """
+    timeline_data = tracking_info.get("timeline", [])
+    prev_titles = tracking_info.get("prev_titles", [])
+    evolution_note = tracking_info.get("evolution_note", "")
+    consecutive_days = tracking_info.get("consecutive_days", 0)
+
+    if not timeline_data and not prev_titles and not evolution_note:
+        return ""
+
+    # Build timeline items
+    timeline_items = []
+
+    if timeline_data:
+        # New format: [{date, title, url}]
+        for i, entry in enumerate(timeline_data):
+            day_num = i + 1
+            dot_color = "#BDC3C7"
+            t = escape(entry.get("title", ""))
+            d = escape(entry.get("date", ""))
+            u = entry.get("url", "")
+            label = f'{d}: ' if d else f'Day {day_num}: '
+            if u:
+                title_html = (
+                    f'<a href="{escape(u)}" target="_blank" '
+                    f'style="color:#5B7083;text-decoration:none;'
+                    f'border-bottom:1px dashed #BDC3C7;">{t}</a>')
+            else:
+                title_html = t
+            timeline_items.append(
+                f'<div style="display:flex;align-items:flex-start;margin-bottom:6px;">'
+                f'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;'
+                f'background:{dot_color};margin-top:6px;margin-right:10px;"></div>'
+                f'<span style="font-size:13px;color:#888888;line-height:1.5;">'
+                f'{label}{title_html}</span></div>')
+    elif prev_titles:
+        # Legacy format: ["title1", "title2"]
+        for i, prev_title in enumerate(prev_titles):
+            day_num = i + 1
+            dot_color = "#BDC3C7"
+            timeline_items.append(
+                f'<div style="display:flex;align-items:flex-start;margin-bottom:6px;">'
+                f'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;'
+                f'background:{dot_color};margin-top:6px;margin-right:10px;"></div>'
+                f'<span style="font-size:13px;color:#888888;line-height:1.5;">'
+                f'Day {day_num}: {escape(prev_title)}</span></div>')
+
+    # Current day (highlighted, red dot)
+    timeline_items.append(
+        f'<div style="display:flex;align-items:flex-start;margin-bottom:2px;">'
+        f'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;'
+        f'background:#E74C3C;margin-top:6px;margin-right:10px;"></div>'
+        f'<span style="font-size:13px;color:#2C3E50;font-weight:600;line-height:1.5;">'
+        f'Day {consecutive_days}（今天）: 最新进展</span></div>')
+
+    timeline_html = "\n".join(timeline_items)
+
+    # Evolution summary
+    evolution_html = ""
+    if evolution_note:
+        evolution_html = (
+            f'<p style="margin:6px 0 0 0;font-size:13px;color:#666666;'
+            f'line-height:1.5;font-style:italic;">'
+            f'\U0001F4CC {escape(evolution_note)}</p>')
+
+    return (
+        f'<div style="margin:10px 0 0 0;padding:10px 14px;'
+        f'background:#FAFBFC;border:1px solid #E8E8E8;border-radius:4px;">'
+        f'<p style="margin:0 0 8px 0;font-size:13px;color:#7F8C8D;font-weight:600;">'
+        f'\U0001F4C5 事件追踪（第 {consecutive_days} 天）</p>'
+        f'<div style="border-left:2px solid #DADADA;padding-left:8px;margin-left:3px;">'
+        f'{timeline_html}'
+        f'</div>'
+        f'{evolution_html}'
+        f'</div>'
+    )
+
+
+def render_main_item(item, is_last):
+    """Render a single main news item."""
+    title = escape(item["title"])
+    url = escape(item["url"])
+    summary = escape(item["summary"])
+    meta = render_meta_line(item)
+
+    border_style = "" if is_last else "border-bottom:1px solid #EEEEEE;"
+    padding_bottom = "0" if is_last else "20px"
+    margin_bottom = "0" if is_last else "20px"
+
+    # Build title line with optional tracking badge
+    title_html = (
+        f'<a href="{url}" target="_blank" style="font-size:18px;color:#2C3E50;'
+        f'text-decoration:none;font-weight:600;line-height:1.4;">{title}</a>'
+    )
+    tracking_info = item.get("tracking_info")
+    if tracking_info:
+        consecutive_days = escape(str(tracking_info.get("consecutive_days", "")))
+        title_html += (
+            f'<span style="display:inline-block;margin-left:8px;background:#FFF3CD;color:#856404;'
+            f'padding:2px 8px;border-radius:3px;font-size:12px;font-weight:normal;'
+            f'vertical-align:middle;">\U0001F504 连续报道第{consecutive_days}天</span>'
+        )
+
+    parts = [
+        f'<div style="margin-bottom:{margin_bottom};padding-bottom:{padding_bottom};{border_style}">',
+        title_html,
+        meta,
+    ]
+
+    # Alt sources line
+    alt_sources = item.get("alt_sources")
+    if alt_sources:
+        sources_text = escape(" / ".join(str(s) for s in alt_sources))
+        parts.append(
+            f'<p style="margin:4px 0 0 0;color:#8E44AD;font-size:13px;">'
+            f'\U0001F4E1 多源覆盖: {sources_text}</p>'
+        )
+
+    parts.append(
+        f'<p style="margin:8px 0 0 0;font-size:16px;color:#34495E;line-height:1.7;">{summary}</p>'
+    )
+
+    raw_insights = item.get("insights")
+    if raw_insights:
+        insight_list = raw_insights if isinstance(raw_insights, list) else [raw_insights]
+        for ins in insight_list:
+            if ins:
+                parts.append(
+                    f'<p style="margin:8px 0 0 0;padding-left:12px;border-left:3px solid #DADADA;'
+                    f'font-size:15px;color:#666666;line-height:1.7;font-style:italic;">{escape(ins)}</p>'
+                )
+
+    # Event timeline for tracked stories
+    if tracking_info:
+        parts.append(render_event_timeline(tracking_info))
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
+def render_overview(data):
+    """Render the overview section. Returns '' if no overview field."""
+    overview = data.get("overview")
+    if not overview:
+        return ""
+    return (
+        '<div style="width:100%;background-color:#FFFFFF;margin-bottom:16px;box-sizing:border-box;'
+        'box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #E8E8E8;">'
+        '<div style="border-bottom:1px solid #EEEEEE;padding:12px 20px;">'
+        '<h2 style="margin:0;color:#2C3E50;font-size:19px;font-weight:700;">'
+        '\U0001F4CB 今日概览</h2>'
+        '</div>'
+        '<div style="padding:16px 20px;">'
+        f'<p style="margin:0;font-size:16px;color:#34495E;line-height:1.8;">{escape(overview)}</p>'
+        '</div>'
+        '</div>'
+    )
+
+
+def render_cross_links(data):
+    """Render cross-domain link insights. Returns '' if no cross_links."""
+    cross_links = data.get("cross_links")
+    if not cross_links:
+        return ""
+    items_html_parts = []
+    for link in cross_links:
+        theme = escape(link.get("theme", ""))
+        explanation = escape(link.get("explanation", ""))
+        items_html_parts.append(
+            f'<div style="margin-bottom:12px;">'
+            f'<p style="margin:0 0 4px 0;font-size:16px;color:#2C3E50;font-weight:600;">{theme}</p>'
+            f'<p style="margin:0;font-size:15px;color:#555555;line-height:1.7;">{explanation}</p>'
+            f'</div>'
+        )
+    items_html = "\n".join(items_html_parts)
+    return (
+        '<div style="width:100%;background-color:#FFFFFF;margin-bottom:16px;box-sizing:border-box;'
+        'box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #E8E8E8;">'
+        '<div style="border-bottom:1px solid #EEEEEE;padding:12px 20px;">'
+        '<h2 style="margin:0;color:#2C3E50;font-size:19px;font-weight:700;">'
+        '\U0001F517 今日关联</h2>'
+        '</div>'
+        f'<div style="padding:16px 20px;">'
+        f'{items_html}'
+        f'</div>'
+        '</div>'
+    )
+
+
+def render_main_section(category_key, items):
+    """Render a category card with its news items. Returns '' if items is empty."""
+    if not items:
+        return ""
+    config = CATEGORY_CONFIG[category_key]
+    color = config["color"]
+    name = escape(config["name"])
+
+    rendered_items = []
+    for i, item in enumerate(items):
+        is_last = (i == len(items) - 1)
+        rendered_items.append(render_main_item(item, is_last))
+
+    items_html = "\n".join(rendered_items)
+
+    emoji = config.get("emoji", "")
+    bg = config.get("bg", "#F2F3F4")
+    return (
+        f'<div style="width:100%;background-color:#FFFFFF;'
+        f'margin-bottom:16px;box-sizing:border-box;'
+        f'box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #E8E8E8;">'
+        f'<div style="background-color:{bg};border-left:4px solid {color};'
+        f'padding:12px 16px;box-sizing:border-box;">'
+        f'<h2 style="margin:0;color:#2C3E50;font-size:19px;font-weight:700;">'
+        f'{emoji} {name}</h2>'
+        f'</div>'
+        f'<div style="padding:16px 20px;">'
+        f'{items_html}'
+        f'</div>'
+        '</div>'
+    )
+
+
+def render_brief_section(brief_items):
+    """Render the 'more news' compact list. Returns '' if empty."""
+    if not brief_items:
+        return ""
+
+    groups = group_by_category(brief_items)
+    sections = []
+
+    for cat_key in CATEGORY_ORDER:
+        if cat_key not in groups:
+            continue
+        config = CATEGORY_CONFIG[cat_key]
+        color = config["color"]
+        cat_name = escape(config["name"])
+
+        items_html_parts = []
+        for item in groups[cat_key]:
+            title = escape(item["title"])
+            url = escape(item["url"])
+            source_part = ""
+            if item.get("source"):
+                source_part = (
+                    f' <span style="color:#999999;font-size:13px;">'
+                    f'- {escape(item["source"])}</span>'
+                )
+            items_html_parts.append(
+                f'<div style="margin-bottom:8px;line-height:1.6;">'
+                f'<span style="color:{color};margin-right:8px;">&#9679;</span>'
+                f'<a href="{url}" target="_blank" style="font-size:15px;color:#2C3E50;'
+                f'text-decoration:none;">{title}</a>{source_part}'
+                f'</div>'
+            )
+
+        items_html = "\n".join(items_html_parts)
+        emoji = config.get("emoji", "")
+        bg = config.get("bg", "#F2F3F4")
+        sections.append(
+            f'<div style="margin-bottom:12px;">'
+            f'<h3 style="margin:0 0 8px 0;font-size:13px;color:#666666;font-weight:600;'
+            f'background-color:{bg};padding:5px 10px;display:inline-block;">'
+            f'{emoji} {cat_name}</h3>'
+            f'{items_html}'
+            f'</div>'
+        )
+
+    if not sections:
+        return ""
+
+    total_brief = sum(len(groups.get(k, [])) for k in CATEGORY_ORDER)
+    sections_html = "\n".join(sections)
+    return (
+        '<div style="width:100%;background-color:#FFFFFF;'
+        'margin-bottom:16px;box-sizing:border-box;'
+        'box-shadow:0 2px 8px rgba(0,0,0,0.06);border:1px solid #E8E8E8;">'
+        '<details style="padding:0;margin:0;">'
+        '<summary style="list-style:none;cursor:pointer;border-bottom:1px solid #EEEEEE;'
+        'padding:12px 20px;display:flex;align-items:center;justify-content:space-between;">'
+        '<h2 style="margin:0;color:#2C3E50;font-size:19px;font-weight:700;display:inline;">'
+        f'&#128240; 更多资讯（{total_brief}条）</h2>'
+        '<span style="color:#999999;font-size:13px;">点击展开 ▼</span>'
+        '</summary>'
+        f'<div style="padding:16px 20px;">'
+        f'{sections_html}'
+        f'</div>'
+        '</details>'
+        '</div>'
+    )
+
+
+def render_footer(data):
+    """Render the footer section."""
+    reading_guide = data.get("reading_guide")
+    tagline = escape(data.get("tagline", ""))
+    signature = escape(data.get("signature", ""))
+    parts = []
+    if reading_guide:
+        parts.append(
+            f'<p style="margin:0 0 12px 0;font-size:15px;color:#34495E;line-height:1.6;">'
+            f'\U0001F4D6 {escape(reading_guide)}</p>'
+        )
+    if tagline:
+        parts.append(
+            f'<p style="margin:0 0 8px 0;font-style:italic;color:#7F8C8D;font-size:15px;">'
+            f'{tagline}</p>'
+        )
+    if signature:
+        parts.append(
+            f'<p style="margin:0;color:#95A5A6;font-size:14px;">&mdash; {signature} &mdash;</p>'
+        )
+    inner = "\n".join(parts)
+    return (
+        f'<div style="width:100%;text-align:center;padding:20px;box-sizing:border-box;">'
+        f'{inner}'
+        f'</div>'
+    )
+
+
+def render_html(data):
+    """Render the complete HTML document."""
+    header = render_header(data)
+    overview_html = render_overview(data)
+
+    main_groups = group_by_category(data.get("main", []))
+    main_sections = []
+    for cat_key in CATEGORY_ORDER:
+        section = render_main_section(cat_key, main_groups.get(cat_key, []))
+        if section:
+            main_sections.append(section)
+    main_html = "\n".join(main_sections)
+
+    cross_links_html = render_cross_links(data)
+    brief_html = render_brief_section(data.get("brief", []))
+    footer = render_footer(data)
+
+    return (
+        '<!DOCTYPE html>\n'
+        '<html lang="zh-CN">\n'
+        '<head>\n'
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        f'<title>{escape(data["title"])} - {format_date(data["date"])}</title>\n'
+        '</head>\n'
+        '<body style="margin:0;padding:0;background-color:#EBECED;'
+        "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;\">\n"
+        '<div style="width:100%;padding:0;box-sizing:border-box;">\n'
+        '<div style="padding:16px 16px 0 16px;">\n'
+        f'{header}\n'
+        '</div>\n'
+        '<div style="padding:16px;">\n'
+        f'{overview_html}\n'
+        f'{main_html}\n'
+        f'{cross_links_html}\n'
+        f'{brief_html}\n'
+        f'{footer}\n'
+        '</div>\n'
+        '</div>\n'
+        '</body>\n'
+        '</html>'
+    )
+
+
+def parse_args(argv=None):
+    """Parse CLI arguments."""
+    parser = argparse.ArgumentParser(description="将 JSON 新闻数据转换为 HTML 邮件简报")
+    parser.add_argument("input", help="输入的 JSON 文件路径")
+    parser.add_argument("-o", "--output", required=True, help="输出的 HTML 文件路径")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """Main entry point."""
+    args = parse_args(argv)
+    data = load_and_validate(args.input)
+    html_content = render_html(data)
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    print(f"已生成: {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

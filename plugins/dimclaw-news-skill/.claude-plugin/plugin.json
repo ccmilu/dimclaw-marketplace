@@ -1,0 +1,5 @@
+{
+  "name": "dimclaw-news-skill",
+  "description": "综合新闻聚合器，从16大来源实时获取、过滤和深度分析内容：Hacker News、GitHub Trending、Product Hunt、36氪、腾讯新闻、华尔街见闻、V2EX、微博、ArXiv、TechCrunch、The Verge、HuggingFace Papers、财联社、少数派。支持 AI 语义去重、事件追踪和编辑概览。",
+  "version": "1.0.0"
+}

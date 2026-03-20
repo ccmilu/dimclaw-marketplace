@@ -1,0 +1,22 @@
+{
+  "name": "dimclaw",
+  "owner": {
+    "name": "jason",
+    "email": "ccmilu@outlook.com"
+  },
+  "metadata": {
+    "description": "Dimclaw 技能集：新闻聚合与网页阅读工具"
+  },
+  "plugins": [
+    {
+      "name": "dimclaw-news-skill",
+      "source": "./plugins/dimclaw-news-skill",
+      "description": "综合新闻聚合器，从16大来源实时获取、过滤和深度分析内容，支持 AI 语义去重、事件追踪和编辑概览。"
+    },
+    {
+      "name": "zhipu-reader",
+      "source": "./plugins/zhipu-reader",
+      "description": "使用智谱 AI Reader API 读取并解析网页内容，返回干净的 markdown 或纯文本，支持批量模式。"
+    }
+  ]
+}

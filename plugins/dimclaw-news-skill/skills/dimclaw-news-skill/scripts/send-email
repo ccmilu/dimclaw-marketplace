@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Email sender - supports plain text and HTML."""
+
+import argparse
+import os
+import smtplib
+import sys
+from email.mime.text import MIMEText
+from email.header import Header
+
+
+def send_email(to_addrs, subject, body, is_html=False):
+    # 从环境变量读取 SMTP 配置
+    smtp_host = os.environ.get('SMTP_HOST', 'smtp.163.com')
+    smtp_port = int(os.environ.get('SMTP_PORT', '465'))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+
+    if not smtp_user or not smtp_password:
+        print("错误: 必须设置 SMTP_USER 和 SMTP_PASSWORD 环境变量", file=sys.stderr)
+        return 1
+
+    # Support multiple recipients (comma-separated)
+    to_list = [addr.strip() for addr in to_addrs.split(',')]
+
+    msg_type = 'html' if is_html else 'plain'
+    msg = MIMEText(body, msg_type, 'utf-8')
+    msg['Subject'] = Header(subject, 'utf-8')
+    msg['From'] = smtp_user
+    msg['To'] = ', '.join(to_list)
+
+    try:
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, to_list, msg.as_string())
+        server.quit()
+        print(f"邮件已发送到 {', '.join(to_list)}")
+        return 0
+    except Exception as e:
+        print(f"发送失败: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="发送邮件，支持纯文本和 HTML 格式"
+    )
+    parser.add_argument(
+        "--html", action="store_true",
+        help="使用 HTML 格式发送（默认纯文本）"
+    )
+    parser.add_argument(
+        "--file", type=str, default=None,
+        help="从文件读取正文内容（解决大 HTML 超过命令行参数长度限制）"
+    )
+    parser.add_argument(
+        "to_addr", type=str,
+        help="收件人邮箱（多个用逗号分隔）"
+    )
+    parser.add_argument(
+        "subject", type=str,
+        help="邮件主题"
+    )
+    parser.add_argument(
+        "body", type=str, nargs="?", default=None,
+        help="邮件正文（与 --file 二选一）"
+    )
+
+    args = parser.parse_args()
+
+    # 校验：--file 和 body 不能同时提供，也不能都不提供
+    if args.file and args.body is not None:
+        print("错误: --file 和正文参数不能同时提供", file=sys.stderr)
+        sys.exit(1)
+    if not args.file and args.body is None:
+        print("错误: 必须提供正文参数或 --file 参数", file=sys.stderr)
+        sys.exit(1)
+
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                body = f.read()
+        except FileNotFoundError:
+            print(f"错误: 文件不存在: {args.file}", file=sys.stderr)
+            sys.exit(1)
+        except IOError as e:
+            print(f"错误: 读取文件失败: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        body = args.body
+
+    sys.exit(send_email(args.to_addr, args.subject, body, args.html))
